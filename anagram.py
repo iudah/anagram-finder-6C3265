@@ -1,512 +1,113 @@
-#!/usr/bin/env python3
-"""Anagram Finder - a command-line word toolkit (standard library only).
-
-Level 1: check whether two words are anagrams
-Level 2: phrases, validation, extra/missing letters, menu, built-in list
-Level 3: word file, anagram families, find anagrams, build words from letters
-Level 4: Scrabble scoring, two-word anagrams, timing, statistics, add words
-
-Shared data structure (agree on this first when working in a group):
-    index: dict mapping sorted-letters string -> list of words
-           e.g. {"eilnst": ["enlist", "listen", "silent", "tinsel"]}
-"""
-
-import itertools
-import os
-import time
+import re
 from collections import Counter
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-WORD_FILE = os.path.join(HERE, "words.txt")
-REPORT_FILE = os.path.join(HERE, "word_report.txt")
-
-# Small built-in list used by the Level 2 "find anagrams" option.
-BUILTIN_WORDS = [
-    "listen", "silent", "enlist", "tinsel", "inlets",
-    "stone", "notes", "onset", "tones", "steno",
-    "angel", "angle", "glean", "evil", "vile", "live", "veil",
-    "race", "care", "acre", "heart", "earth", "hater",
-    "below", "elbow", "bowel", "study", "dusty",
-    "spare", "pears", "parse", "reaps", "spear",
-]
-
-# Standard Scrabble letter values.
-LETTER_VALUES = {
-    **dict.fromkeys("aeioulnstr", 1),
-    **dict.fromkeys("dg", 2),
-    **dict.fromkeys("bcmp", 3),
-    **dict.fromkeys("fhvwy", 4),
-    "k": 5,
-    **dict.fromkeys("jx", 8),
-    **dict.fromkeys("qz", 10),
-}
-
-
-# --------------------------------------------------------------------------
-# Core letter helpers (Levels 1-2)
-# --------------------------------------------------------------------------
-
-def clean(text):
-    """Lower-case the text and keep only the letters a-z."""
-    return "".join(ch for ch in text.lower() if ch.isascii() and ch.isalpha())
-
-
-def sorted_letters(text):
-    """Return the cleaned letters of the text in sorted order."""
-    return "".join(sorted(clean(text)))
-
-
-def format_counts(counter):
-    """Turn a Counter into text like 'a x2, b, c x3'."""
-    parts = []
-    for letter in sorted(counter):
-        n = counter[letter]
-        parts.append(letter if n == 1 else f"{letter} x{n}")
-    return ", ".join(parts)
-
-
-def letter_difference(first, second):
-    """Return (extra, missing) letter counts of first compared with second.
-
-    extra   = letters first has more of than second
-    missing = letters first would need to match second
-    """
-    count_a = Counter(clean(first))
-    count_b = Counter(clean(second))
-    return count_a - count_b, count_b - count_a
-
-
-# --------------------------------------------------------------------------
-# Input helpers
-# --------------------------------------------------------------------------
-
-def ask_text(prompt):
-    """Ask for a word or phrase containing at least one letter."""
-    while True:
-        value = input(prompt).strip()
-        if clean(value):
-            return value
-        print("  Please enter at least one letter.")
-
-
-def ask_yes_no(prompt):
-    while True:
-        answer = input(prompt + " (y/n): ").strip().lower()
-        if answer in ("y", "yes"):
-            return True
-        if answer in ("n", "no"):
-            return False
-        print("  Please answer y or n.")
-
-
-def ask_number(prompt, default, low=1, high=1000):
-    """Ask for a whole number, falling back to a default on empty input."""
-    while True:
-        raw = input(f"{prompt} [{default}]: ").strip()
-        if not raw:
-            return default
-        if raw.isdigit() and low <= int(raw) <= high:
-            return int(raw)
-        print(f"  Enter a whole number between {low} and {high}.")
-
-
-# --------------------------------------------------------------------------
-# Levels 1-2: checking two words
-# --------------------------------------------------------------------------
-
-def check_pair(first, second):
-    """Print whether two words/phrases are anagrams and why."""
-    key_a, key_b = sorted_letters(first), sorted_letters(second)
-
-    if clean(first) == clean(second):
-        print(f'\n"{first}" and "{second}" are the same word, so they are '
-              "NOT anagrams (an anagram needs a different order).")
-        return
-
-    if key_a == key_b:
-        print(f'\n"{first}" and "{second}" are anagrams.')
-        print(f"Sorted letters: {key_a}")
-        return
-
-    print(f'\n"{first}" and "{second}" are NOT anagrams.')
-    print(f"Sorted letters of first:  {key_a}")
-    print(f"Sorted letters of second: {key_b}")
-    extra, missing = letter_difference(first, second)
-    if extra:
-        print(f"Extra in first (not in second): {format_counts(extra)}")
-    if missing:
-        print(f"Missing from first (needed to match second): "
-              f"{format_counts(missing)}")
-
-
-def check_two_words(state=None):
-    """Level 1/2 option: compare pairs until the user stops."""
-    while True:
-        first = ask_text("First word or phrase: ")
-        second = ask_text("Second word or phrase: ")
-        check_pair(first, second)
-        print()
-        if not ask_yes_no("Check another pair?"):
-            break
-
-
-# --------------------------------------------------------------------------
-# Level 3: word list, families, searching
-# --------------------------------------------------------------------------
-
-def load_words(path):
-    """Load a one-word-per-line file. Returns (words, error_message)."""
-    try:
-        with open(path, encoding="utf-8") as handle:
-            lines = handle.read().splitlines()
-    except FileNotFoundError:
-        return [], f"Word file not found: {path}"
-    except (OSError, UnicodeDecodeError) as error:
-        return [], f"Could not read word file ({error})"
-
-    words, seen = [], set()
-    for line in lines:
-        word = line.strip().lower()
-        if word and word.isascii() and word.isalpha() and word not in seen:
-            seen.add(word)
-            words.append(word)
-
-    if not words:
-        return [], f"Word file is empty (no valid words found): {path}"
-    return words, None
-
-
-def build_index(words):
-    """Group words into anagram families keyed by their sorted letters."""
-    index = {}
-    for word in words:
-        index.setdefault("".join(sorted(word)), []).append(word)
-    return index
-
-
-def largest_family(index):
-    """Return (key, words) for the biggest anagram family."""
-    key = max(sorted(index), key=lambda k: len(index[k]))
-    return key, index[key]
-
-
-def find_anagrams(word, index):
-    """Every word in the index that is an anagram of the given word."""
-    target = clean(word)
-    key = "".join(sorted(target))
-    return [w for w in index.get(key, []) if w != target]
-
-
-def can_build(word, available):
-    """True if word fits inside the available Counter of letters."""
-    return all(available[ch] >= n for ch, n in Counter(word).items())
-
-
-def build_from_letters(letters, words):
-    """Words that can be made using each letter at most as often as given."""
-    available = Counter(clean(letters))
-    found = [w for w in words if len(w) >= 2 and can_build(w, available)]
-    return sorted(found, key=lambda w: (-len(w), w))
-
-
-# --------------------------------------------------------------------------
-# Level 4: scoring, two-word anagrams, timing, statistics, adding words
-# --------------------------------------------------------------------------
-
-def score_word(word):
-    return sum(LETTER_VALUES.get(ch, 0) for ch in word)
-
-
-def best_scoring_words(letters, words, limit=10):
-    """Highest-scoring words buildable from the letters."""
-    candidates = build_from_letters(letters, words)
-    candidates.sort(key=lambda w: (-score_word(w), -len(w), w))
-    return candidates[:limit]
-
-
-def two_word_anagrams(phrase, words, index, limit=20):
-    """Pairs of list words whose letters together equal the phrase's letters.
-
-    For each word that fits inside the phrase, the leftover letters are
-    looked up in the index, so no pair is ever tried blindly.
-    """
-    target = Counter(clean(phrase))
-    total = sum(target.values())
-    results, seen = [], set()
-
-    for word in words:
-        if len(word) >= total or not can_build(word, target):
-            continue
-        remainder = target - Counter(word)
-        remainder_key = "".join(sorted(remainder.elements()))
-        for other in index.get(remainder_key, []):
-            pair = tuple(sorted((word, other)))
-            if pair in seen:
-                continue
-            seen.add(pair)
-            results.append(pair)
-            if len(results) >= limit:
-                return results, True
-    return results, False
-
-
-def anagrams_by_permutation(word, word_set):
-    """Slow approach: try every ordering of the letters."""
-    found = set()
-    for perm in itertools.permutations(word):
-        candidate = "".join(perm)
-        if candidate != word and candidate in word_set:
-            found.add(candidate)
-    return found
-
-
-def timing_comparison(words, index):
-    """Time permutations vs. the sorted-letters dictionary (5-9 letters)."""
-    word_set = set(words)
-    print("\nLetters | Word        | Found | Permutations | Dictionary")
-    print("--------+-------------+-------+--------------+-----------")
-    for length in range(5, 10):
-        same_length = [w for w in words if len(w) == length]
-        if not same_length:
-            print(f"{length:>7} | (no words of this length in the list)")
-            continue
-        word = max(same_length, key=lambda w: len(index["".join(sorted(w))]))
-
-        start = time.perf_counter()
-        slow = anagrams_by_permutation(word, word_set)
-        slow_time = time.perf_counter() - start
-
-        start = time.perf_counter()
-        fast = set(find_anagrams(word, index))
-        fast_time = time.perf_counter() - start
-
-        match = "" if slow == fast else " (MISMATCH!)"
-        print(f"{length:>7} | {word:<11} | {len(fast):>5} | "
-              f"{slow_time:>10.6f}s | {fast_time:>8.6f}s{match}")
-    print("\nThe dictionary approach does one lookup; permutations try up to "
-          "n! orderings.")
-
-
-def statistics_report(words, index):
-    """Build the word-list statistics as a list of text lines."""
-    families = {k: v for k, v in index.items() if len(v) > 1}
-    longest = max(words, key=len)
-    letter_totals = Counter("".join(words))
-    top_letters = ", ".join(f"{ch} ({n})" for ch, n in letter_totals.most_common(5))
-    big_key, big_family = largest_family(index)
-
-    return [
-        "WORD LIST STATISTICS",
-        "====================",
-        f"Number of words:        {len(words)}",
-        f"Longest word:           {longest} ({len(longest)} letters)",
-        f"Anagram families (2+):  {len(families)}",
-        f"Largest family:         {len(big_family)} words "
-        f"({', '.join(big_family)})",
-        f"Most common letters:    {top_letters}",
-    ]
-
-
-def save_report(lines, path=REPORT_FILE):
-    try:
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write("\n".join(lines) + "\n")
-        return None
-    except OSError as error:
-        return str(error)
-
-
-def add_word_to_file(raw, words, index, path=WORD_FILE):
-    """Validate and append a new word. Returns (ok, message)."""
-    word = raw.strip().lower()
-    if not word:
-        return False, "Nothing entered."
-    if not (word.isascii() and word.isalpha()):
-        return False, "Words may only contain the letters a-z (no spaces, digits or symbols)."
-    if len(word) < 2:
-        return False, "A word needs at least 2 letters."
-    if word in set(words):
-        return False, f'"{word}" is already in the word list.'
-
-    try:
-        needs_newline = False
-        if os.path.exists(path) and os.path.getsize(path) > 0:
-            with open(path, "rb") as handle:
-                handle.seek(-1, os.SEEK_END)
-                needs_newline = handle.read(1) != b"\n"
-        with open(path, "a", encoding="utf-8") as handle:
-            handle.write(("\n" if needs_newline else "") + word + "\n")
-    except OSError as error:
-        return False, f"Could not write to the word file ({error})."
-
-    words.append(word)
-    index.setdefault("".join(sorted(word)), []).append(word)
-    return True, f'Added "{word}" to the word list.'
-
-
-# --------------------------------------------------------------------------
-# Menu actions
-# --------------------------------------------------------------------------
-
-def show_anagram_list(word, found, source):
-    if found:
-        print(f'\nFound {len(found)} anagram(s) of "{word}" in {source}:')
-        print("  " + ", ".join(sorted(found)))
-    else:
-        print(f'\nNo anagrams of "{word}" found in {source}.')
-
-
-def need_words(state):
-    """Return True if a word list is loaded; otherwise explain why not."""
-    if state["words"]:
-        return True
-    print(f"\nThis option needs the word file. {state['error']}")
-    print("Create a words.txt file (one word per line) next to this program, "
-          "or use option 9 to add words.")
-    return False
-
-
-def menu_builtin_anagrams(state):
-    word = ask_text("Word to find anagrams of: ")
-    index = build_index(BUILTIN_WORDS)
-    show_anagram_list(clean(word), find_anagrams(word, index), "the built-in list")
-
-
-def menu_file_anagrams(state):
-    if not need_words(state):
-        return
-    word = ask_text("Word to find anagrams of: ")
-    show_anagram_list(clean(word), find_anagrams(word, state["index"]),
-                      "the word list")
-
-
-def menu_largest_family(state):
-    if not need_words(state):
-        return
-    key, family = largest_family(state["index"])
-    print(f"\nLargest anagram family ({len(family)} words, letters '{key}'):")
-    print("  " + ", ".join(family))
-
-
-def menu_build_words(state):
-    if not need_words(state):
-        return
-    letters = ask_text("Letters to use: ")
-    found = build_from_letters(letters, state["words"])
-    if not found:
-        print("\nNo words in the list can be made from those letters.")
-        return
-    print(f"\n{len(found)} word(s) can be built from '{clean(letters)}':")
-    print("  " + ", ".join(found))
-
-
-def menu_scrabble(state):
-    if not need_words(state):
-        return
-    while True:
-        letters = clean(ask_text("Enter 7 letters: "))
-        if len(letters) == 7:
-            break
-        print(f"  You entered {len(letters)} letter(s); please enter exactly 7.")
-    top = best_scoring_words(letters, state["words"], limit=10)
-    if not top:
-        print("\nNo words in the list can be made from those letters.")
-        return
-    print(f"\nBest-scoring words from '{letters}':")
-    for rank, word in enumerate(top, start=1):
-        print(f"  {rank:>2}. {word:<10} {score_word(word)} points")
-
-
-def menu_two_word(state):
-    if not need_words(state):
-        return
-    phrase = ask_text("Phrase to rearrange: ")
-    limit = ask_number("Maximum results to show", default=20)
-    pairs, truncated = two_word_anagrams(phrase, state["words"],
-                                         state["index"], limit)
-    if not pairs:
-        print("\nNo two-word anagrams found in the word list.")
-        return
-    print(f"\nTwo-word anagrams of '{clean(phrase)}':")
-    for first, second in pairs:
-        print(f"  {first} {second}")
-    if truncated:
-        print(f"(stopped at the limit of {limit} results)")
-
-
-def menu_timing(state):
-    if need_words(state):
-        timing_comparison(state["words"], state["index"])
-
-
-def menu_statistics(state):
-    if not need_words(state):
-        return
-    lines = statistics_report(state["words"], state["index"])
-    print()
-    print("\n".join(lines))
-    error = save_report(lines)
-    if error:
-        print(f"\nCould not save the report: {error}")
-    else:
-        print(f"\nReport saved to {REPORT_FILE}")
-
-
-def menu_add_word(state):
-    raw = input("New word to add: ")
-    ok, message = add_word_to_file(raw, state["words"], state["index"])
-    print(("\n" if ok else "\nNot added: ") + message)
-    if ok:
-        state["error"] = None
-
-
-# --------------------------------------------------------------------------
-# Main program
-# --------------------------------------------------------------------------
-
-MENU = [
-    ("Check two words or phrases", check_two_words),
-    ("Find anagrams of a word (small built-in list)", menu_builtin_anagrams),
-    ("Find anagrams of a word (word file)", menu_file_anagrams),
-    ("Show the largest anagram family", menu_largest_family),
-    ("Build words from a set of letters", menu_build_words),
-    ("Best Scrabble words from 7 letters", menu_scrabble),
-    ("Find two-word anagrams of a phrase", menu_two_word),
-    ("Timing: permutations vs dictionary", menu_timing),
-    ("Word-list statistics (saves a report)", menu_statistics),
-    ("Add a word to the word file", menu_add_word),
-]
-
-
-def main():
-    words, error = load_words(WORD_FILE)
-    state = {"words": words, "index": build_index(words), "error": error}
-
-    print("=== Anagram Finder ===")
-    if error:
-        print(f"Note: {error}")
-        print("Options 1 and 2 still work; the rest need the word file.")
-    else:
-        print(f"Loaded {len(words)} words from {os.path.basename(WORD_FILE)}.")
-
-    while True:
-        print("\nMenu")
-        for number, (label, _) in enumerate(MENU, start=1):
-            print(f"  {number:>2}. {label}")
-        print("   0. Quit")
-
-        choice = input("Choose an option: ").strip()
-        if choice == "0":
-            print("Goodbye!")
-            return
-        if choice.isdigit() and 1 <= int(choice) <= len(MENU):
-            MENU[int(choice) - 1][1](state)
+common_words_anagram=['cab', 'abc', 'scab', 'abcs', 'abet', 'beat', 'bale', 'able', 'abroad', 'aboard', 'abridge', 'brigade', 'ache', 'each', 'cane', 'acne', 'race', 'acre', 'care', 'cat', 'act', 'da', 'ad', 'add', 'dad', 'married', 'admirer', 'admonition', 'domination', 'adorn', 'radon', 'adroitly', 'idolatry', 'ages', 'sage', 'agree', 'eager', 'ha', 'ah', 'aide', 'idea', 'said', 'aids', 'ira', 'air', 'alarming', 'marginal', 'alarmingly', 'marginally', 'alert', 'later', 'alter', 'allergy', 'largely', 'gallery', 'alloy', 'loyal', 'laurel', 'allure', 'ally', 'yall', 'alms', 'slam', 'float', 'aloft', 'anglo', 'along', 'latitude', 'altitude', 'alumna', 'manual', 'ma', 'am', 'amble', 'blame', 'mean', 'mane', 'amen', 'name', 'amenity', 'anytime', 'maid', 'amid', 'among', 'mango', 'map', 'amp', 'ample', 'maple', 'and', 'dna', 'anemic', 'cinema', 'anew', 'wean', 'wane', 'angle', 'glean', 'angel', 'range', 'anger', 'nation', 'anoint', 'ant', 'tan', 'stagnation', 'antagonist', 'ante', 'neat', 'antler', 'rental', 'pea', 'ape', 'apr', 'par', 'rap', 'tap', 'apt', 'pat', 'car', 'arc', 'arch', 'char', 'are', 'ear', 'era', 'raid', 'arid', 'arise', 'raise', 'aries', 'arm', 'ram', 'mar', 'dream', 'armed', 'impart', 'armpit', 'arms', 'mars', 'art', 'rat', 'tar', 'recital', 'article', 'artist', 'strait', 'star', 'arts', 'artsy', 'stray', 'ascent', 'stance', 'has', 'ash', 'hoarse', 'ashore', 'elapse', 'please', 'asleep', 'aspire', 'praise', 'statue', 'astute', 'ta', 'at', 'eat', 'ate', 'tea', 'mat', 'atm', 'atom', 'moat', 'tentative', 'attentive', 'attentively', 'tentatively', 'tacit', 'attic', 'caution', 'auction', 'aunt', 'tuna', 'wary', 'awry', 'drawback', 'backward', 'bad', 'dab', 'bead', 'bade', 'bag', 'gab', 'gable', 'bagel', 'beak', 'bake', 'brake', 'break', 'baker', 'lamb', 'balm', 'nab', 'ban', 'nba', 'bane', 'bean', 'bra', 'bar', 'bare', 'bear', 'bleary', 'barely', 'barley', 'bran', 'barn', 'bat', 'tab', 'battle', 'tablet', 'beard', 'bread', 'beater', 'berate', 'rebate', 'bedroom', 'boredom', 'being', 'begin', 'binge', 'bowel', 'elbow', 'below', 'binary', 'brainy', 'binder', 'inbred', 'brazier', 'bizarre', 'blearily', 'reliably', 'bristle', 'blister', 'blot', 'bolt', 'bowl', 'blow', 'broad', 'board', 'gob', 'bog', 'bolster', 'lobster', 'robe', 'bore', 'brag', 'grab', 'garb', 'rabid', 'braid', 'braille', 'liberal', 'rabies', 'braise', 'bridal', 'ribald', 'brief', 'fiber', 'throb', 'broth', 'brunt', 'burnt', 'brush', 'shrub', 'rebut', 'brute', 'dub', 'bud', 'budge', 'debug', 'rebuff', 'buffer', 'bugle', 'bulge', 'rebuild', 'builder', 'snub', 'buns', 'ruby', 'bury', 'sub', 'bus', 'bust', 'stub', 'bustle', 'subtle', 'sublet', 'but', 'tub', 'cedar', 'cadre', 'face', 'cafe', 'cellar', 'recall', 'caller', 'calligraphy', 'graphically', 'calm', 'clam', 'came', 'mace', 'canoe', 'ocean', 'trance', 'recant', 'nectar', 'canter', 'cap', 'cpa', 'pace', 'cape', 'recap', 'caper', 'capitol', 'optical', 'topical', 'upscale', 'capsule', 'caring', 'racing', 'coral', 'carol', 'crap', 'carp', 'cartel', 'rectal', 'carve', 'crave', 'carving', 'craving', 'sack', 'cask', 'testcase', 'cassette', 'crate', 'cater', 'react', 'trace', 'caterer', 'terrace', 'retrace', 'cause', 'sauce', 'dc', 'cd', 'center', 'recent', 'rectify', 'certify', 'chain', 'china', 'charm', 'march', 'charts', 'starch', 'peach', 'cheap', 'cheat', 'teach', 'cheater', 'teacher', 'checkin', 'chicken', 'inch', 'chin', 'itch', 'chit', 'much', 'chum', 'circle', 'cleric', 'rustic', 'citrus', 'scalp', 'clasp', 'clay', 'lacy', 'lance', 'clean', 'cleaners', 'cleanser', 'cobbler', 'clobber', 'cold', 'clod', 'clot', 'colt', 'cloud', 'could', 'velcro', 'clover', 'coal', 'cola', 'coat', 'taco', 'oceanic', 'cocaine', 'code', 'coed', 'icon', 'coin', 'comics', 'cosmic', 'polemic', 'compile', 'complaint', 'compliant', 'recondition', 'conditioner', 'condor', 'cordon', 'once', 'cone', 'conversation', 'conservation', 'conserve', 'converse', 'considerate', 'desecration', 'unnoticed', 'continued', 'coordinate', 'decoration', 'cork', 'rock', 'corny', 'crony', 'coroner', 'crooner', 'crop', 'corp', 'sector', 'escort', 'corset', 'oct', 'cot', 'trounce', 'counter', 'recount', 'source', 'course', 'scrap', 'craps', 'tracer', 'crater', 'creation', 'reaction', 'creator', 'reactor', 'credit', 'direct', 'director', 'creditor', 'credo', 'decor', 'creep', 'crepe', 'crocus', 'succor', 'crud', 'curd', 'cruel', 'ulcer', 'cutlery', 'cruelty', 'curtsy', 'crusty', 'ragged', 'dagger', 'diary', 'dairy', 'dam', 'mad', 'made', 'dame', 'madden', 'damned', 'demand', 'garden', 'danger', 'gander', 'read', 'dear', 'dare', 'dawdle', 'waddle', 'dawn', 'wand', 'deaf', 'fade', 'deal', 'lead', 'leader', 'dealer', 'dealership', 'leadership', 'leading', 'dealing', 'delta', 'dealt', 'hatred', 'dearth', 'thread', 'death', 'hated', 'decimal', 'medical', 'decree', 'recede', 'reed', 'deer', 'defrost', 'frosted', 'deli', 'idle', 'maddening', 'demanding', 'demeanor', 'enamored', 'dome', 'demo', 'mode', 'den', 'end', 'needs', 'dense', 'destiny', 'density', 'tend', 'dent', 'depress', 'pressed', 'scented', 'descent', 'designer', 'resigned', 'desire', 'reside', 'dilate', 'detail', 'redevelop', 'developer', 'dew', 'wed', 'laid', 'dial', 'repaid', 'diaper', 'dice', 'iced', 'diet', 'tide', 'edit', 'dying', 'dingy', 'ride', 'dire', 'directions', 'discretion', 'discern', 'rescind', 'seaside', 'disease', 'disk', 'skid', 'tiredness', 'dissenter', 'drive', 'diver', 'od', 'do', 'doe', 'ode', 'does', 'dose', 'stoned', 'doesnt', 'dog', 'god', 'done', 'node', 'mood', 'doom', 'odor', 'door', 'downer', 'wonder', 'woodland', 'download', 'wordy', 'rowdy', 'dowry', 'dr', 'rd', 'grad', 'drag', 'padre', 'drape', 'spread', 'drapes', 'draw', 'ward', 'reward', 'drawer', 'redress', 'dresser', 'redid', 'dried', 'drier', 'rider', 'prod', 'drop', 'dues', 'used', 'dune', 'nude', 'dust', 'stud', 'study', 'dusty', 'dynamo', 'monday', 'layer', 'relay', 'early', 'near', 'earn', 'eastern', 'earnest', 'earth', 'heart', 'hearty', 'earthy', 'easel', 'lease', 'east', 'seat', 'segregate', 'easteregg', 'elf', 'efl', 'he', 'eh', 'eighth', 'height', 'toenail', 'elation', 'em', 'me', 'mire', 'emir', 'mite', 'emit', 'item', 'time', 'english', 'shingle', 'general', 'enlarge', 'tinsel', 'silent', 'enlist', 'listen', 'enrage', 'genera', 'enraged', 'grenade', 'eternity', 'entirety', 'entrap', 'parent', 'pique', 'equip', 'er', 're', 'etal', 'tale', 'late', 'ether', 'three', 'there', 'veer', 'ever', 'vile', 'live', 'veil', 'evil', 'wee', 'ewe', 'exalt', 'latex', 'expect', 'except', 'fare', 'fear', 'frat', 'raft', 'fart', 'feat', 'fate', 'fbi', 'fib', 'feel', 'flee', 'feet', 'fete', 'felt', 'left', 'fidget', 'gifted', 'fiendish', 'finished', 'fighter', 'freight', 'file', 'life', 'trifle', 'filter', 'finder', 'friend', 'finger', 'fringe', 'fri', 'fir', 'fire', 'rife', 'sift', 'fist', 'flair', 'frail', 'flea', 'leaf', 'shelf', 'flesh', 'flier', 'rifle', 'flit', 'lift', 'golf', 'flog', 'flow', 'wolf', 'fowl', 'flue', 'fuel', 'loaf', 'foal', 'for', 'fro', 'foster', 'forest', 'tollfree', 'foretell', 'forge', 'gofer', 'from', 'form', 'former', 'reform', 'froth', 'forth', 'reef', 'free', 'fretful', 'truffle', 'lag', 'gal', 'gap', 'gpa', 'gape', 'page', 'garret', 'garter', 'grater', 'gas', 'sag', 'gateway', 'getaway', 'gear', 'rage', 'gel', 'leg', 'genital', 'gelatin', 'gem', 'meg', 'neg', 'gen', 'teenager', 'generate', 'genre', 'green', 'manger', 'german', 'ginger', 'nigger', 'glider', 'girdle', 'girth', 'right', 'large', 'regal', 'glare', 'toga', 'goat', 'goldmine', 'modeling', 'negro', 'goner', 'ogre', 'gore', 'orgy', 'gory', 'regard', 'grader', 'grape', 'pager', 'grate', 'great', 'ring', 'grin', 'groan', 'organ', 'grown', 'wrong', 'rugged', 'grudge', 'plug', 'gulp', 'gum', 'mug', 'gunshot', 'shotgun', 'guts', 'gust', 'gusty', 'gutsy', 'tug', 'gut', 'heal', 'hale', 'halter', 'lather', 'overhang', 'hangover', 'hear', 'hare', 'heat', 'hate', 'shade', 'heads', 'heinous', 'inhouse', 'heir', 'hire', 'sphere', 'herpes', 'hes', 'she', 'when', 'hewn', 'hinge', 'neigh', 'thin', 'hint', 'hmo', 'ohm', 'uphold', 'holdup', 'hornet', 'nother', 'throne', 'horse', 'shore', 'hose', 'shoe', 'shot', 'host', 'who', 'how', 'however', 'whoever', 'hug', 'ugh', 'hustle', 'sleuth', 'region', 'ignore', 'mi', 'im', 'permission', 'impression', 'impressive', 'permissive', 'impure', 'umpire', 'incest', 'insect', 'intend', 'indent', 'iridescent', 'indiscreet', 'inter', 'inert', 'infidel', 'infield', 'kin', 'ink', 'sin', 'ins', 'insult', 'sunlit', 'integral', 'triangle', 'reduction', 'introduce', 'untried', 'intrude', 'irs', 'sir', 'isnt', 'snit', 'itll', 'lilt', 'till', 'sit', 'its', 'itself', 'stifle', 'vie', 'ive', 'junta', 'jaunt', 'keel', 'leek', 'knee', 'keen', 'peek', 'keep', 'link', 'kiln', 'kitchen', 'thicken', 'naked', 'knead', 'ko', 'ok', 'kw', 'wk', 'lain', 'nail', 'liar', 'lair', 'rail', 'leak', 'lake', 'male', 'lame', 'meal', 'mantle', 'mental', 'lament', 'mantel', 'lamp', 'palm', 'lane', 'lean', 'lap', 'pal', 'slat', 'salt', 'last', 'latent', 'talent', 'reliant', 'latrine', 'latter', 'rattle', 'layout', 'outlay', 'plea', 'leap', 'pale', 'peal', 'plate', 'petal', 'leapt', 'pleat', 'steal', 'least', 'slate', 'stale', 'leer', 'reel', 'lemon', 'melon', 'repel', 'leper', 'lever', 'revel', 'lewd', 'weld', 'silence', 'license', 'lien', 'line', 'lime', 'mile', 'lisp', 'slip', 'slit', 'silt', 'list', 'tile', 'lite', 'outlook', 'lookout', 'loop', 'pool', 'polo', 'tool', 'loot', 'lope', 'pole', 'role', 'lore', 'sole', 'lose', 'lost', 'lots', 'slot', 'lovely', 'volley', 'owl', 'low', 'lumber', 'rumble', 'plum', 'lump', 'lure', 'rule', 'lust', 'slut', 'rustle', 'luster', 'result', 'maam', 'mama', 'magenta', 'magnate', 'median', 'maiden', 'roman', 'manor', 'ramble', 'marble', 'mare', 'ream', 'marine', 'remain', 'martial', 'marital', 'remark', 'marker', 'scam', 'masc', 'sham', 'mash', 'master', 'stream', 'meat', 'mate', 'tame', 'team', 'may', 'yam', 'meet', 'teem', 'mete', 'megaton', 'montage', 'remit', 'timer', 'merit', 'meteor', 'remote', 'ragtime', 'migrate', 'mindless', 'mildness', 'slime', 'miles', 'smile', 'reclaim', 'miracle', 'molar', 'moral', 'moon', 'mono', 'moor', 'room', 'mope', 'poem', 'tm', 'mt', 'smut', 'must', 'ultimate', 'mutilate', 'pan', 'nap', 'nape', 'pane', 'neither', 'therein', 'none', 'neon', 'nerd', 'rend', 'nerve', 'never', 'nest', 'sent', 'net', 'ten', 'tenure', 'neuter', 'tureen', 'sewn', 'news', 'went', 'newt', 'thing', 'night', 'things', 'nights', 'pin', 'nip', 'tin', 'nit', 'on', 'no', 'noon', 'nono', 'peon', 'open', 'nope', 'thorn', 'north', 'ton', 'not', 'note', 'tone', 'stone', 'onset', 'notes', 'now', 'own', 'won', 'nuclear', 'unclear', 'stun', 'nuts', 'verbose', 'observe', 'oiled', 'oldie', 'oils', 'soil', 'silo', 'opt', 'top', 'pot', 'optic', 'topic', 'option', 'potion', 'roe', 'ore', 'relation', 'oriental', 'sour', 'ours', 'outer', 'route', 'tedious', 'outside', 'overeat', 'overate', 'overpass', 'passover', 'voter', 'overt', 'overtake', 'takeover', 'overturn', 'turnover', 'woe', 'owe', 'oyster', 'storey', 'pertain', 'painter', 'paltry', 'partly', 'plane', 'penal', 'panel', 'reap', 'rape', 'pare', 'pear', 'parental', 'prenatal', 'paternal', 'trap', 'rapt', 'tarp', 'part', 'taps', 'past', 'spat', 'spate', 'paste', 'pastel', 'staple', 'peat', 'pate', 'tape', 'portal', 'patrol', 'yap', 'pay', 'plead', 'pedal', 'penis', 'snipe', 'spine', 'per', 'rep', 'percussion', 'supersonic', 'perse', 'spree', 'perverse', 'preserve', 'sept', 'pest', 'step', 'shape', 'phase', 'pier', 'ripe', 'pierce', 'recipe', 'tip', 'pit', 'plains', 'spinal', 'plaster', 'stapler', 'player', 'replay', 'protein', 'pointer', 'pore', 'rope', 'report', 'porter', 'shop', 'posh', 'stop', 'post', 'spot', 'redtape', 'predate', 'tapered', 'teardrop', 'predator', 'serpent', 'present', 'supreme', 'presume', 'prey', 'pyre', 'stripe', 'priest', 'printer', 'reprint', 'procedure', 'reproduce', 'prom', 'romp', 'proton', 'pronto', 'super', 'purse', 'quiet', 'quite', 'rare', 'rear', 'rasp', 'spar', 'spray', 'raspy', 'rate', 'tear', 'rationalize', 'realization', 'raw', 'war', 'resource', 'recourse', 'rode', 'redo', 'revile', 'relive', 'remains', 'seminar', 'secure', 'rescue', 'reverse', 'reserve', 'singer', 'resign', 'risen', 'rinse', 'resin', 'siren', 'sister', 'resist', 'roster', 'resort', 'respect', 'specter', 'restrain', 'strainer', 'retina', 'retain', 'trader', 'retard', 'thinker', 'rethink', 'retinue', 'reunite', 'retrial', 'trailer', 'viewer', 'review', 'rework', 'worker', 'trio', 'riot', 'sire', 'rise', 'squire', 'risque', 'rite', 'tier', 'tire', 'viral', 'rival', 'rouge', 'rogue', 'torso', 'roost', 'roots', 'sore', 'rose', 'tore', 'rote', 'tour', 'rout', 'urn', 'run', 'ruse', 'sure', 'user', 'sacred', 'scared', 'satin', 'stain', 'saint', 'sale', 'seal', 'slave', 'salve', 'same', 'seam', 'sang', 'snag', 'sanity', 'satiny', 'satan', 'santa', 'spa', 'sap', 'save', 'vase', 'was', 'saw', 'sawn', 'swan', 'selves', 'vessel', 'senator', 'treason', 'serve', 'sever', 'verse', 'trestle', 'settler', 'setup', 'upset', 'share', 'shear', 'sheet', 'these', 'shit', 'this', 'soothing', 'shooting', 'south', 'shout', 'show', 'whos', 'tush', 'thus', 'shut', 'sidle', 'slide', 'sign', 'sing', 'singing', 'signing', 'silver', 'sliver', 'swine', 'sinew', 'sink', 'skin', 'skate', 'stake', 'steak', 'skater', 'streak', 'snail', 'slain', 'sleet', 'steel', 'spelt', 'slept', 'smother', 'thermos', 'sneak', 'snake', 'snap', 'span', 'stanch', 'snatch', 'spin', 'snip', 'snoop', 'spoon', 'tons', 'snot', 'snow', 'sown', 'sung', 'snug', 'spear', 'spare', 'stoplight', 'spotlight', 'stupor', 'sprout', 'stalk', 'talks', 'upstart', 'startup', 'state', 'taste', 'statement', 'testament', 'steer', 'terse', 'west', 'stew', 'wrest', 'strew', 'trust', 'strut', 'use', 'sue', 'wasp', 'swap', 'ways', 'sway', 'swear', 'wares', 'waste', 'sweat', 'wings', 'swing', 'swore', 'worse', 'teak', 'take', 'teens', 'tense', 'trainer', 'terrain', 'what', 'thaw', 'thirst', 'tshirt', 'worth', 'throw', 'trot', 'tort', 'tow', 'two', 'wrote', 'tower', 'wont', 'town', 'trade', 'tread', 'trained', 'tradein', 'trail', 'trial', 'trout', 'tutor', 'untie', 'unite', 'vein', 'vine', 'vote', 'veto', 'virgo', 'vigor', 'weak', 'wake', 'wander', 'warden', 'ware', 'wear', 'wrap', 'warp', 'wired', 'weird', 'wither', 'writhe']
+
+def clean_input(text):
+    cleaned=  re.sub(r"[\W_ ]", r"", text.lower())
+    return cleaned, sorted(cleaned)
+
+def analyse_anagram(text1,text2):
+    clean1,sort1=clean_input(text1)
+    clean2,sort2=clean_input(text2)
+    is_anagram,sort= sort1==sort2 and clean1!=clean2, "".join(sort1) if sort1==sort2 else None
+
+    s1missing=None
+    s2missing=None
+    if (not is_anagram) and (sort is  None):
+        c2 = None
+        c1=Counter(sort1)
+        # print(c1)
+        c2=Counter(sort2)
+        # print(c2)
+        c1.subtract(c2)
+        s1missing = {c: -c1[c] for c in c1 if c1[c]<0}#[c for c in sort2 if c not in sort1]
+        s2missing = {c: c1[c] for c in c1 if c1[c]>0}#[c for c in sort1 if c not in sort2]
+    return is_anagram, sort, s1missing, s2missing
+
+
+def load_file(filepath, filecallback):
+    try :
+        with open(filepath) as f:
+            return filecallback(f)
+    except Exception as e:
+        print(e)
+
+def sort_dict(f):
+    sort_word={}
+    for word in f:
+        clean, sort = clean_input(word)
+        sort ="".join(sort)
+        if sort not in sort_word:
+            sort_word[sort]={clean}
         else:
-            print("Please choose a number from the menu.")
+            sort_word[sort].add(clean)
+    return sort_word
+
+def analyse_anagram_file(path):
+    dicts= load_file(path, sort_dict)
+    if not dicts:
+      return None, None, None, 0, None
+    largest_family = max(dicts.values(), key=len)
+    words = [w for fam in dicts.values() for w in fam]
+    longest = max(words, key=len)
+    most_common_counter = Counter(c for w in words for c in w)
+    return dicts,len(words),largest_family, longest, len(dicts), most_common_counter
+
+def cache_dict(source=common_words_anagram):
+    def decorator(fn):
+        def wrapper(*arg, **kwarg):
+            return fn(*arg,**kwarg)
+        
+        return wrapper
+    return decorator
+
+# @cache_dict()
+# def anagram_from_list(word):
+#     clean, sort = clean_input(word)
+#     sort="".join(sort)
+#     if sort in anagram_from_list.dicts:
+#         return anagram_from_list.dicts[sort]
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except (EOFError, KeyboardInterrupt):
-        print("\nGoodbye!")
+# @cache_dict("3of6all.txt")
+# def anagram_from_default_file(word):
+#     clean, sort = clean_input(word)
+#     sort="".join(sort)
+#     if sort in anagram_from_default_file.dicts:
+#         return anagram_from_default_file.dicts[sort]
+
+def make_anagram_lookup(source):
+    index =None 
+    if isinstance(source, str):
+        index=load_file(source, sort_dict)
+    if isinstance(source, (list,tuple,set)):
+        index= sort_dict(source)
+    if not isinstance(source, (str,list,tuple,set)):
+        raise RuntimeError(f"Unsupported type {type(source)!r} for anagram source")
+    if index is None:
+        raise RuntimeError("Could not load anagram source")
+    def lookup(word):
+        return index.get("".join(clean_input(word)[1]))
+    return lookup
+
+anagram_from_list = make_anagram_lookup(common_words_anagram)
+anagram_from_default_file = make_anagram_lookup("3of6all.txt")
+
+
+if __name__ =="__main__":
+    print(clean_input("There are some people we ususally don't like to meet in life. A number of them are crazy, foolish, or unwise."))
+    str1, str2 = "Is a Dormitory", "Isa Dirty room"
+    print(analyse_anagram(str1, str2))
+    print(analyse_anagram(str1, str1))
+    print(analyse_anagram("scarred", "racecar"))
+    # print([m for w in load_file("3esl.txt", sort_dict).values() if len(w)>1 for m in w])
+    print(anagram_from_list("cab"))
+    print(anagram_from_default_file("cab"))
+    stats = analyse_anagram_file("3of6all.txt")
+    print(stats)
+    # dicts,largest_anagram_family, largest_word, len(dicts), most_common
+    # print(f"Words: {stats[]}  Families: {stats[]}")
+    # print(f"Largest family ({len(stats.largest_family)}): {sorted(stats.largest_family)}")
+    # print(f"Longest word: {stats.longest_word}")
+    # print(f"Most common letters: {stats.most_common_letters[:5]}")
