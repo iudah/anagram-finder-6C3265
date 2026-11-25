@@ -236,13 +236,12 @@ def statistics_report(path):
     anagram.analyse_anagram_file returns
         (index, largest_family, longest_word, num_families, Counter)
     """
-    index, big_family, longest, num_families, letter_counter = \
+    index, num_words, big_family, longest, num_families, letter_counter = \
         lib.analyse_anagram_file(path)
     if index is None:
         return None, f"Could not read a usable word list from {path!r}."
 
     words = words_from_index(index)
-    num_words = len(words)
     num_families_2plus = sum(1 for fam in index.values() if len(fam) > 1)
     top_letters = ", ".join(
         f"{ch} ({n})" for ch, n in letter_counter.most_common(5)
