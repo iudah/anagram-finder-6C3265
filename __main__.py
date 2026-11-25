@@ -1,21 +1,13 @@
-# main.py
-"""Command-line driver for the Anagram Finder.
+#!/usr/bin/env python3
+"""Anagram Finder - command-line driver (front end) using anagram.py as backend.
 
-Menu options cover Levels 1-4 of the project spec:
-  * two-word anagram check (with explanation)
-  * exact anagram lookup (built-in list, current file, or arbitrary file)
-  * build words from a multiset of letters
-  * largest anagram family
-  * Scrabble-scored highest-value 7-letter words
-  * two-word anagram search for a phrase
-  * benchmark: brute-force permutations vs sorted-letters index
-  * word-list statistics via anagram.analyse_anagram_file, saved to a report
-  * choose / change the active word-list file
-  * append new words to the active word file
+Keeps the front-end menu, state dict and UX, but delegates all letter logic,
+indexing, scoring and statistics to anagram.py:
 
-The active word list is controlled by ``CURRENT_WORD_FILE`` and can be changed
-from the menu (option 8).  Switching reloads the shared lookup closures so
-subsequent menu actions see the new list.
+    clean_input / analyse_anagram        -> word comparison
+    load_file / sort_dict                -> word-file loading + index
+    make_anagram_lookup                  -> anagram lookups
+    analyse_anagram_file                 -> word-list statistics
 """
 
 import itertools
@@ -26,425 +18,507 @@ from collections import Counter
 import anagram as lib
 
 
-DEFAULT_WORD_FILE = "3of6all.txt"
-REPORT_FILE = "anagram_report.txt"
-CURRENT_WORD_FILE = DEFAULT_WORD_FILE
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_WORD_FILE = os.path.join(HERE, "3of6all.txt")
+REPORT_FILE = os.path.join(HERE, "word_report.txt")
 
-SCRABBLE = {**dict.fromkeys("aeioulnrst", 1),
-            **dict.fromkeys("dg", 2),
-            **dict.fromkeys("bcmp", 3),
-            **dict.fromkeys("fhvwy", 4),
-            **dict.fromkeys("k", 5),
-            **dict.fromkeys("jx", 8),
-            **dict.fromkeys("qz", 10)}
-
-
-# ---------------------------------------------------------------- helpers
-def prompt(msg):
-    """input() that never raises on EOF / Ctrl-C in a menu."""
-    try:
-        return input(msg).strip()
-    except (EOFError, KeyboardInterrupt):
-        print()
-        return ""
+# Standard Scrabble letter values (front-end concern, not in backend).
+LETTER_VALUES = {
+    **dict.fromkeys("aeioulnstr", 1),
+    **dict.fromkeys("dg", 2),
+    **dict.fromkeys("bcmp", 3),
+    **dict.fromkeys("fhvwy", 4),
+    "k": 5,
+    **dict.fromkeys("jx", 8),
+    **dict.fromkeys("qz", 10),
+}
 
 
-def ask_nonempty(prompt_text, label):
-    """Loop until the user enters something with at least one letter."""
+# --------------------------------------------------------------------------
+# Thin wrapper over anagram.clean_input (no letter logic duplicated)
+# --------------------------------------------------------------------------
+def key_of(text):
+    """Backend's sorted-letter key as a string (what index lookups expect)."""
+    return "".join(lib.clean_input(text)[1])
+
+
+# --------------------------------------------------------------------------
+# Input helpers
+# --------------------------------------------------------------------------
+def ask_text(prompt):
     while True:
-        raw = prompt(prompt_text)
-        cleaned, _ = lib.clean_input(raw)
-        if cleaned:
-            return raw
-        print(f"  ! {label} must contain at least one letter. Try again.")
+        value = input(prompt).strip()
+        if lib.clean_input(value)[0]:
+            return value
+        print("  Please enter at least one letter.")
 
 
-def scrabble_score(word):
-    return sum(SCRABBLE.get(ch, 0) for ch in word.lower())
+def ask_yes_no(prompt):
+    while True:
+        answer = input(prompt + " (y/n): ").strip().lower()
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no"):
+            return False
+        print("  Please answer y or n.")
 
 
-def can_build(word, letters_counter):
-    return all(word.count(c) <= letters_counter[c] for c in set(word))
+def ask_number(prompt, default, low=1, high=1000):
+    while True:
+        raw = input(f"{prompt} [{default}]: ").strip()
+        if not raw:
+            return default
+        if raw.isdigit() and low <= int(raw) <= high:
+            return int(raw)
+        print(f"  Enter a whole number between {low} and {high}.")
 
 
-def get_index(path=None):
-    """Load a word list and return the sorted-letters index, or None."""
-    path = path or CURRENT_WORD_FILE
-    index = lib.load_file(path, lib.sort_dict)
-    if not index:
-        print(f"  ! Could not read a usable word list from {path!r}.")
-        return None
-    return index
+# --------------------------------------------------------------------------
+# Levels 1-2: checking two words (uses anagram.analyse_anagram)
+# --------------------------------------------------------------------------
+def format_counts(counter):
+    """Counter -> 'a x2, b, c x3' (front-end formatting only)."""
+    parts = []
+    for letter in sorted(counter):
+        n = counter[letter]
+        parts.append(letter if n == 1 else f"{letter} x{n}")
+    return ", ".join(parts)
 
 
-def get_words(index):
-    """All words in the index, flattened."""
+def check_pair(first, second):
+    is_anagram, sort, s1missing, s2missing = lib.analyse_anagram(first, second)
+    clean_a, sorted_a = lib.clean_input(first)
+    clean_b, sorted_b = lib.clean_input(second)
+
+    if clean_a == clean_b:
+        print(f'\n"{first}" and "{second}" are the same word, so they are '
+              "NOT anagrams (an anagram needs a different order).")
+        return
+    if is_anagram:
+        print(f'\n"{first}" and "{second}" are anagrams.')
+        print(f"Sorted letters: {sort}")
+        return
+
+    print(f'\n"{first}" and "{second}" are NOT anagrams.')
+    print(f"Sorted letters of first:  {''.join(sorted_a)}")
+    print(f"Sorted letters of second: {''.join(sorted_b)}")
+    extra = Counter(s2missing or {})
+    missing = Counter(s1missing or {})
+    if extra:
+        print(f"Extra in first (not in second): {format_counts(extra)}")
+    if missing:
+        print(f"Missing from first (needed to match second): "
+              f"{format_counts(missing)}")
+
+
+def check_two_words(state=None):
+    while True:
+        first = ask_text("First word or phrase: ")
+        second = ask_text("Second word or phrase: ")
+        check_pair(first, second)
+        print()
+        if not ask_yes_no("Check another pair?"):
+            break
+
+
+# --------------------------------------------------------------------------
+# Level 3: word list / families / searching (uses anagram.load_file/sort_dict)
+# --------------------------------------------------------------------------
+def words_from_index(index):
     return [w for fam in index.values() for w in fam]
 
 
-def refresh_lookup():
-    """Rebuild the shared lookup closures after the word file changes.
+def load_words(path):
+    """Load a word file via anagram.load_file + anagram.sort_dict.
 
-    ``lib.make_anagram_lookup`` raises on a bad file, so we guard it: the
-    program stays alive and the user can pick another file.
+    Returns (words, index, error_message).
     """
+    if not os.path.exists(path):
+        return [], {}, f"Word file not found: {path}"
+    index = lib.load_file(path, lib.sort_dict)
+    if not index:
+        return [], {}, f"Word file is empty or unreadable: {path}"
+    words = sorted(words_from_index(index))
+    return words, index, None
+
+
+def largest_family(index):
+    key = max(index, key=lambda k: len(index[k]))
+    return key, index[key]
+
+
+def find_anagrams(word, index):
+    target = lib.clean_input(word)[0]
+    return sorted(index.get(key_of(word), set()) - {target})
+
+
+def can_build(word, available):
+    return all(available[ch] >= n for ch, n in Counter(word).items())
+
+
+def build_from_letters(letters, words):
+    available = Counter(lib.clean_input(letters)[0])
+    found = [w for w in words if len(w) >= 2 and can_build(w, available)]
+    return sorted(found, key=lambda w: (-len(w), w))
+
+
+# --------------------------------------------------------------------------
+# Level 4: scoring, two-word anagrams, timing, statistics, adding words
+# --------------------------------------------------------------------------
+def score_word(word):
+    return sum(LETTER_VALUES.get(ch, 0) for ch in word)
+
+
+def best_scoring_words(letters, words, limit=10):
+    candidates = build_from_letters(letters, words)
+    candidates.sort(key=lambda w: (-score_word(w), -len(w), w))
+    return candidates[:limit]
+
+
+def two_word_anagrams(phrase, words, index, limit=20):
+    target = Counter(lib.clean_input(phrase)[0])
+    total = sum(target.values())
+    results, seen = [], set()
+    for word in words:
+        if len(word) >= total or not can_build(word, target):
+            continue
+        remainder = target - Counter(word)
+        remainder_key = "".join(sorted(remainder.elements()))
+        for other in index.get(remainder_key, ()):
+            if other == word:
+                continue
+            pair = tuple(sorted((word, other)))
+            if pair in seen:
+                continue
+            seen.add(pair)
+            results.append(pair)
+            if len(results) >= limit:
+                return results, True
+    return results, False
+
+
+def anagrams_by_permutation(word, word_set):
+    found = set()
+    for perm in itertools.permutations(word):
+        candidate = "".join(perm)
+        if candidate != word and candidate in word_set:
+            found.add(candidate)
+    return found
+
+
+def timing_comparison(words, index):
+    word_set = set(words)
+    print("\nLetters | Word        | Found | Permutations | Dictionary")
+    print("--------+-------------+-------+--------------+-----------")
+    for length in range(5, 10):
+        same_length = [w for w in words if len(w) == length]
+        if not same_length:
+            print(f"{length:>7} | (no words of this length in the list)")
+            continue
+        word = max(same_length,
+                   key=lambda w: len(index.get(key_of(w), ())))
+        start = time.perf_counter()
+        slow = anagrams_by_permutation(word, word_set)
+        slow_time = time.perf_counter() - start
+        start = time.perf_counter()
+        fast = set(find_anagrams(word, index))
+        fast_time = time.perf_counter() - start
+        match = "" if slow == fast else " (MISMATCH!)"
+        print(f"{length:>7} | {word:<11} | {len(fast):>5} | "
+              f"{slow_time:>10.6f}s | {fast_time:>8.6f}s{match}")
+    print("\nThe dictionary approach does one lookup; permutations try up to "
+          "n! orderings.")
+
+
+def statistics_report(path):
+    """Build statistics using anagram.analyse_anagram_file.
+
+    anagram.analyse_anagram_file returns
+        (index, largest_family, longest_word, num_families, Counter)
+    """
+    index, big_family, longest, num_families, letter_counter = \
+        lib.analyse_anagram_file(path)
+    if index is None:
+        return None, f"Could not read a usable word list from {path!r}."
+
+    words = words_from_index(index)
+    num_words = len(words)
+    num_families_2plus = sum(1 for fam in index.values() if len(fam) > 1)
+    top_letters = ", ".join(
+        f"{ch} ({n})" for ch, n in letter_counter.most_common(5)
+    )
+
+    lines = [
+        "WORD LIST STATISTICS",
+        "====================",
+        f"Word file:              {path}",
+        f"Number of words:        {num_words}",
+        f"Longest word:           {longest} ({len(longest)} letters)",
+        f"Anagram families (2+):  {num_families_2plus}",
+        f"Anagram families (all): {num_families}",
+        f"Largest family:         {len(big_family)} words "
+        f"({', '.join(sorted(big_family))})",
+        f"Most common letters:    {top_letters}",
+    ]
+    return lines, None
+
+
+def save_report(lines, path=REPORT_FILE):
     try:
-        lib.anagram_from_default_file = lib.make_anagram_lookup(CURRENT_WORD_FILE)
-    except RuntimeError as exc:
-        print(f"  ! Could not rebuild lookup for {CURRENT_WORD_FILE!r}: {exc}")
-        # Leave the previous closure in place; menu actions that reload the
-        # file themselves (build_words, stats, etc.) still work.
-    return None
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        return None
+    except OSError as error:
+        return str(error)
 
 
-# ---------------------------------------------------------------- menu items
-def menu_check_two():
-    print("\n-- Check two words --")
-    a = ask_nonempty("First word/phrase: ", "First entry")
-    b = ask_nonempty("Second word/phrase: ", "Second entry")
+def add_word_to_file(raw, state, path):
+    """Validate and append a new word, then refresh backend lookups."""
+    word = raw.strip().lower()
+    if not word:
+        return False, "Nothing entered."
+    if not (word.isascii() and word.isalpha()):
+        return False, "Words may only contain the letters a-z (no spaces, digits or symbols)."
+    if len(word) < 2:
+        return False, "A word needs at least 2 letters."
+    if word in set(state["words"]):
+        return False, f'"{word}" is already in the word list.'
 
-    is_anagram, sort, s1missing, s2missing = lib.analyse_anagram(a, b)
-    clean1, sorted1 = lib.clean_input(a)
-    clean2, sorted2 = lib.clean_input(b)
+    try:
+        needs_newline = False
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            with open(path, "rb") as handle:
+                handle.seek(-1, os.SEEK_END)
+                needs_newline = handle.read(1) != b"\n"
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(("\n" if needs_newline else "") + word + "\n")
+    except OSError as error:
+        return False, f"Could not write to the word file ({error})."
 
-    print(f'\n  "{a}" vs "{b}"')
-    print(f"  Sorted letters (1): {''.join(sorted1)}")
-    print(f"  Sorted letters (2): {''.join(sorted2)}")
+    state["words"].append(word)
+    state["index"].setdefault(key_of(word), set()).add(word)
+    # Keep anagram.py's shared lookup closure in sync with the new file.
+    try:
+        lib.anagram_from_default_file = lib.make_anagram_lookup(path)
+    except RuntimeError:
+        pass
+    return True, f'Added "{word}" to the word list.'
 
-    if clean1 == clean2:
-        print("  -> They are the SAME word. Not anagrams: "
-              "an anagram must reorder different letters.")
-    elif is_anagram:
-        print("  -> They ARE anagrams.")
+
+# --------------------------------------------------------------------------
+# Menu actions
+# --------------------------------------------------------------------------
+def show_anagram_list(word, found, source):
+    if found:
+        print(f'\nFound {len(found)} anagram(s) of "{word}" in {source}:')
+        print("  " + ", ".join(sorted(found)))
     else:
-        print("  -> They are NOT anagrams.")
-        if s2missing:
-            extras = ", ".join(f"{c}x{n}" for c, n in sorted(s2missing.items()))
-            print(f"     Extra in first : {extras}")
-        if s1missing:
-            extras = ", ".join(f"{c}x{n}" for c, n in sorted(s1missing.items()))
-            print(f"     Extra in second: {extras}")
+        print(f'\nNo anagrams of "{word}" found in {source}.')
 
 
-def menu_find_anagrams():
-    print("\n-- Find anagrams of a word --")
+def need_words(state):
+    if state["words"]:
+        return True
+    print(f"\nThis option needs the word file. {state['error']}")
+    print("Create a word file (one word per line) or use option 10 to add words.")
+    return False
+
+
+def menu_builtin_anagrams(state):
+    word = ask_text("Word to find anagrams of: ")
+    target = lib.clean_input(word)[0]
+    found = (lib.anagram_from_list(word) or set()) - {target}
+    show_anagram_list(target, sorted(found), "the built-in list")
+
+
+def menu_file_anagrams(state):
+    if not need_words(state):
+        return
+    word = ask_text("Word to find anagrams of: ")
+    target = lib.clean_input(word)[0]
+    found = (lib.anagram_from_default_file(word) or set()) - {target}
+    show_anagram_list(target, sorted(found), "the word list")
+
+
+def menu_largest_family(state):
+    if not need_words(state):
+        return
+    key, family = largest_family(state["index"])
+    print(f"\nLargest anagram family ({len(family)} words, letters '{key}'):")
+    print("  " + ", ".join(sorted(family)))
+
+
+def menu_build_words(state):
+    if not need_words(state):
+        return
+    letters = ask_text("Letters to use: ")
+    found = build_from_letters(letters, state["words"])
+    if not found:
+        print("\nNo words in the list can be made from those letters.")
+        return
+    cleaned = lib.clean_input(letters)[0]
+    print(f"\n{len(found)} word(s) can be built from '{cleaned}':")
+    print("  " + ", ".join(found))
+
+
+def menu_scrabble(state):
+    if not need_words(state):
+        return
     while True:
-        word = ask_nonempty("Word: ", "Word")
-
-        print("  Source:")
-        print("   1) built-in list")
-        print(f"   2) current file: {CURRENT_WORD_FILE}")
-        print("   3) choose a new file")
-        choice = prompt("   Choose [1/2/3]: ")
-
-        if choice == "1":
-            fam = lib.anagram_from_list(word)
-            label = "built-in list"
-        elif choice == "2":
-            fam = lib.anagram_from_default_file(word)
-            label = CURRENT_WORD_FILE
-        elif choice == "3":
-            path = ask_nonempty("Path to word list: ", "Path")
-            index = get_index(path)
-            if index is None:
-                continue
-            fam = index.get("".join(lib.clean_input(word)[1]))
-            label = path
-        else:
-            print("  ! Enter 1, 2, or 3.")
-            continue
-
-        fam = (fam or set()) - {word.lower()}
-        if fam:
-            print(f"  Found {len(fam)} anagram(s) of {word!r} in {label}:")
-            for w in sorted(fam):
-                print(f"    - {w}")
-        else:
-            print(f"  No anagrams of {word!r} in {label}.")
-
-        if prompt("  Another? [y/N]: ").lower() != "y":
-            return
-
-
-def menu_build_words():
-    print("\n-- Build words from letters --")
-    raw = ask_nonempty("Letters: ", "Letter set")
-    letters = lib.clean_input(raw)[0]
-    counter = Counter(letters)
-
-    index = get_index()
-    if index is None:
-        return
-
-    hits = sorted({w for w in get_words(index) if len(w) > 1 and can_build(w, counter)},
-                  key=lambda w: (-len(w), w))
-
-    if not hits:
-        print(f"  No words can be built from {letters!r}.")
-        return
-    print(f"  {len(hits)} word(s) can be built from {letters!r} "
-          f"(longest first, showing up to 40):")
-    for w in hits[:40]:
-        print(f"    - {w}")
-
-    print("\n  Top by Scrabble score:")
-    for w in sorted(hits, key=lambda w: (-scrabble_score(w), w))[:10]:
-        print(f"    - {w:20s} {scrabble_score(w):3d}")
-
-
-def menu_largest_family():
-    print("\n-- Largest anagram family --")
-    index = get_index()
-    if index is None:
-        return
-    family = max(index.values(), key=len)
-    sample = next(iter(family))
-    key = "".join(lib.clean_input(sample)[1])
-    print(f"  {len(family)} words share sorted key {key!r}:")
-    for w in sorted(family):
-        print(f"    - {w}")
-
-
-def menu_best_7():
-    print("\n-- Highest-scoring 7-letter words from your letters --")
-    raw = ask_nonempty("7 letters (letters only): ", "Letters")
-    letters = lib.clean_input(raw)[0]
-    if len(letters) != 7:
-        print(f"  ! You entered {len(letters)} letters; want exactly 7.")
-        return
-    counter = Counter(letters)
-
-    index = get_index()
-    if index is None:
-        return
-
-    hits = sorted({w for w in get_words(index) if can_build(w, counter)},
-                  key=lambda w: (-scrabble_score(w), w))
-    if not hits:
-        print("  No words can be built from those letters.")
-        return
-    print(f"  Top {min(10, len(hits))} by score:")
-    for w in hits[:10]:
-        print(f"    - {w:20s} {scrabble_score(w):3d}")
-
-
-def menu_two_word_anagrams():
-    print("\n-- Two-word anagrams of a phrase --")
-    phrase = ask_nonempty("Phrase: ", "Phrase")
-    target = "".join(lib.clean_input(phrase)[1])
-    target_counter = Counter(target)
-
-    index = get_index()
-    if index is None:
-        return
-
-    words = sorted({w for w in get_words(index) if len(w) > 1})
-    results = set()
-    for w1 in words:
-        c1 = Counter(w1)
-        if not all(c1[c] <= target_counter[c] for c in c1):
-            continue
-        remaining = target_counter - c1
-        rem_key = "".join(sorted(remaining.elements()))
-        second_fam = index.get(rem_key)
-        if not second_fam:
-            continue
-        for w2 in second_fam:
-            if w2 == w1:
-                continue
-            results.add(tuple(sorted((w1, w2))))
-        if len(results) >= 25:
+        letters = lib.clean_input(ask_text("Enter 7 letters: "))[0]
+        if len(letters) == 7:
             break
+        print(f"  You entered {len(letters)} letter(s); please enter exactly 7.")
+    top = best_scoring_words(letters, state["words"], limit=10)
+    if not top:
+        print("\nNo words in the list can be made from those letters.")
+        return
+    print(f"\nBest-scoring words from '{letters}':")
+    for rank, word in enumerate(top, start=1):
+        print(f"  {rank:>2}. {word:<10} {score_word(word)} points")
 
-    if results:
-        print(f"  {len(results)} pair(s) (showing up to 25):")
-        for a, b in sorted(results)[:25]:
-            print(f"    - {a} + {b}")
+
+def menu_two_word(state):
+    if not need_words(state):
+        return
+    phrase = ask_text("Phrase to rearrange: ")
+    limit = ask_number("Maximum results to show", default=20)
+    pairs, truncated = two_word_anagrams(phrase, state["words"],
+                                         state["index"], limit)
+    if not pairs:
+        print("\nNo two-word anagrams found in the word list.")
+        return
+    cleaned = lib.clean_input(phrase)[0]
+    print(f"\nTwo-word anagrams of '{cleaned}':")
+    for first, second in pairs:
+        print(f"  {first} {second}")
+    if truncated:
+        print(f"(stopped at the limit of {limit} results)")
+
+
+def menu_timing(state):
+    if need_words(state):
+        timing_comparison(state["words"], state["index"])
+
+
+def menu_statistics(state):
+    if not need_words(state):
+        return
+    lines, error = statistics_report(state["path"])
+    if error:
+        print(f"\n{error}")
+        return
+    print()
+    print("\n".join(lines))
+    write_error = save_report(lines)
+    if write_error:
+        print(f"\nCould not save the report: {write_error}")
     else:
-        print("  No two-word anagrams found.")
+        print(f"\nReport saved to {REPORT_FILE}")
 
 
-def menu_benchmark():
-    print("\n-- Benchmark: permutations vs sorted-letters index --")
-    index = get_index()
-    if index is None:
-        return
-
-    # Pick one sample word per length; do NOT iterate characters of a string.
-    by_len = {}
-    for w in get_words(index):
-        if 5 <= len(w) <= 9 and len(w) not in by_len:
-            by_len[len(w)] = w
-
-    if not by_len:
-        print("  ! No words of length 5-9 in the current word list.")
-        return
-
-    print(f"  {'len':>3} {'perm (s)':>12} {'index (s)':>12} {'speedup':>10}")
-    for n in sorted(by_len):
-        word = by_len[n]
-        key = "".join(sorted(word))
-
-        t0 = time.perf_counter()
-        _ = [p for p in itertools.permutations(word) if "".join(p) in index]
-        t_perm = time.perf_counter() - t0
-
-        runs = 1000
-        t0 = time.perf_counter()
-        for _ in range(runs):
-            _ = index.get(key)
-        t_index = (time.perf_counter() - t0) / runs
-
-        speedup = t_perm / t_index if t_index else float("inf")
-        print(f"  {n:>3} {t_perm:>12.6f} {t_index:>12.8f} {speedup:>9.0f}x")
+def menu_add_word(state):
+    raw = input("New word to add: ")
+    ok, message = add_word_to_file(raw, state, state["path"])
+    print(("\n" if ok else "\nNot added: ") + message)
+    if ok:
+        state["error"] = None
 
 
-def menu_stats():
-    """Word-list statistics via anagram.analyse_anagram_file."""
-    print("\n-- Word-list statistics --")
-    stats = lib.analyse_anagram_file(CURRENT_WORD_FILE)
-    index, num_words, largest_family, longest, num_families, letter_counter = stats
-
-    if index is None:
-        print(f"  ! Could not read a usable word list from {CURRENT_WORD_FILE!r}.")
-        return
-
-    words = get_words(index)            # driver recomputes word count
-
-    print(f"  File              : {CURRENT_WORD_FILE}")
-    print(f"  Words             : {num_words}")
-    print(f"  Anagram families  : {num_families}")
-    print(f"  Largest family    : {len(largest_family)} words "
-          f"(e.g. {sorted(largest_family)[:5]})")
-    print(f"  Longest word      : {longest!r} ({len(longest)} letters)")
-    print("  Most common letters (top 5):")
-    for ch, n in letter_counter.most_common(5):
-        print(f"    {ch!r}: {n}")
-
-    if prompt("  Save report to file? [y/N]: ").lower() == "y":
-        try:
-            with open(REPORT_FILE, "w", encoding="utf-8") as fh:
-                fh.write(f"Anagram report for {CURRENT_WORD_FILE}\n")
-                fh.write("=" * 40 + "\n")
-                fh.write(f"Words: {num_words}\n")
-                fh.write(f"Anagram families: {num_families}\n")
-                fh.write(f"Largest family: {sorted(largest_family)}\n")
-                fh.write(f"Longest word: {longest} ({len(longest)})\n")
-                fh.write("Letter frequency:\n")
-                for ch, n in letter_counter.most_common():
-                    fh.write(f"  {ch}: {n}\n")
-            print(f"  Report written to {REPORT_FILE}.")
-        except OSError as exc:
-            print(f"  ! Could not write report: {exc}")
-
-
-def menu_change_file():
-    """Switch the active word-list file.  Adds the 'new file' option."""
-    global CURRENT_WORD_FILE
-    print("\n-- Choose the word-list file --")
-    print(f"  Current: {CURRENT_WORD_FILE}")
-    print(f"   1) keep current")
-    print(f"   2) use default ({DEFAULT_WORD_FILE})")
-    print(f"   3) enter a new path")
-    choice = prompt("   Choose [1/2/3]: ")
+def menu_change_file(state):
+    """Switch the active word-list file."""
+    print(f"\nCurrent word file: {state['path']}")
+    print("  1) keep current")
+    print(f"  2) use default ({os.path.basename(DEFAULT_WORD_FILE)})")
+    print("  3) enter a new path")
+    choice = input("Choose [1/2/3]: ").strip()
 
     if choice == "1":
         return
     if choice == "2":
         new_path = DEFAULT_WORD_FILE
     elif choice == "3":
-        new_path = ask_nonempty("Path to word list: ", "Path")
+        new_path = input("Path to word list: ").strip()
     else:
-        print("  ! Enter 1, 2, or 3.")
+        print("  Please choose 1, 2, or 3.")
         return
 
-    if not os.path.exists(new_path):
-        print(f"  ! {new_path!r} does not exist.")
-        return
     if not os.path.isfile(new_path):
-        print(f"  ! {new_path!r} is not a regular file.")
+        print(f'  Not a regular file: {new_path}')
         return
 
-    probe = lib.load_file(new_path, lib.sort_dict)
-    if not probe:
-        print(f"  ! {new_path!r} is empty or unreadable; keeping {CURRENT_WORD_FILE!r}.")
+    words, index, error = load_words(new_path)
+    if error:
+        print(f"  {error}")
         return
 
-    CURRENT_WORD_FILE = new_path
-    refresh_lookup()
-    print(f"  Active word list is now {CURRENT_WORD_FILE!r} "
-          f"({sum(len(f) for f in probe.values())} words, "
-          f"{len(probe)} families).")
+    state.update({
+        "path": new_path,
+        "words": words,
+        "index": index,
+        "error": None,
+    })
+    try:
+        lib.anagram_from_default_file = lib.make_anagram_lookup(new_path)
+    except RuntimeError as exc:
+        print(f"  Note: could not rebuild backend lookup ({exc}); "
+              "menu actions that reload will still work.")
+    print(f"  Loaded {len(words)} words from {new_path}.")
 
 
-def menu_add_word():
-    print(f"\n-- Add a word to {CURRENT_WORD_FILE} --")
-    if not os.path.exists(CURRENT_WORD_FILE):
-        print(f"  ! {CURRENT_WORD_FILE} does not exist; choose another file first.")
-        return
-
-    raw = ask_nonempty("New word: ", "Word").lower()
-    cleaned, _ = lib.clean_input(raw)
-    if not cleaned:
-        print("  ! Word has no letters after cleaning.")
-        return
-    if cleaned != raw:
-        print(f"  ! Only letters are allowed (got {raw!r}, would store {cleaned!r}).")
-        return
-
-    existing = set()
-    with open(CURRENT_WORD_FILE, encoding="utf-8") as fh:
-        existing = {line.strip().lower() for line in fh if line.strip()}
-
-    if cleaned in existing:
-        print(f"  ! {cleaned!r} is already in the list.")
-        return
-
-    with open(CURRENT_WORD_FILE, "a", encoding="utf-8") as fh:
-        fh.write(cleaned + "\n")
-    print(f"  Added {cleaned!r} to {CURRENT_WORD_FILE}.")
-
-    refresh_lookup()
-
-
-# ---------------------------------------------------------------- driver
-def build_menu():
-    """Menu is rebuilt each loop so labels reflect CURRENT_WORD_FILE."""
-    return {
-        "1": ("Check two words", menu_check_two),
-        "2": ("Find anagrams of a word", menu_find_anagrams),
-        "3": ("Build words from letters", menu_build_words),
-        "4": ("Largest anagram family", menu_largest_family),
-        "5": ("Highest-scoring 7-letter Scrabble words", menu_best_7),
-        "6": ("Two-word anagrams of a phrase", menu_two_word_anagrams),
-        "7": ("Benchmark: permutations vs index", menu_benchmark),
-        "8": (f"Word-list statistics and report", menu_stats),
-        "9": (f"Change word-list file (current: {CURRENT_WORD_FILE})", menu_change_file),
-        "10": (f"Add a word to {CURRENT_WORD_FILE}", menu_add_word),
-        "0": ("Quit", None),
-    }
+# --------------------------------------------------------------------------
+# Main program
+# --------------------------------------------------------------------------
+MENU = [
+    ("Check two words or phrases", check_two_words),
+    ("Find anagrams of a word (small built-in list)", menu_builtin_anagrams),
+    ("Find anagrams of a word (word file)", menu_file_anagrams),
+    ("Show the largest anagram family", menu_largest_family),
+    ("Build words from a set of letters", menu_build_words),
+    ("Best Scrabble words from 7 letters", menu_scrabble),
+    ("Find two-word anagrams of a phrase", menu_two_word),
+    ("Timing: permutations vs dictionary", menu_timing),
+    ("Word-list statistics (saves a report)", menu_statistics),
+    ("Add a word to the word file", menu_add_word),
+    ("Change the active word-list file", menu_change_file),
+]
 
 
 def main():
+    initial_path = DEFAULT_WORD_FILE
+    words, index, error = load_words(initial_path)
+    state = {
+        "path": initial_path,
+        "words": words,
+        "index": index,
+        "error": error,
+    }
+
+    print("=== Anagram Finder ===")
+    if error:
+        print(f"Note: {error}")
+        print("Options 1 and 2 still work; the rest need the word file.")
+        print("Use option 11 to choose a different word file.")
+    else:
+        print(f"Loaded {len(words)} words from {os.path.basename(initial_path)}.")
+
     while True:
-        menu = build_menu()
-        print("\n===== ANAGRAM FINDER =====")
-        for key, (label, _) in menu.items():
-            print(f"  {key:>2}) {label}")
-        choice = prompt("Choose an option: ")
+        print("\nMenu")
+        for number, (label, _) in enumerate(MENU, start=1):
+            print(f"  {number:>2}. {label}")
+        print("   0. Quit")
+        choice = input("Choose an option: ").strip()
         if choice == "0":
-            print("Bye.")
+            print("Goodbye!")
             return
-        entry = menu.get(choice)
-        if entry is None:
-            print("  ! Unknown option.")
-            continue
-        _, func = entry
-        try:
-            func()
-        except Exception as exc:
-            print(f"  ! Error: {exc}")
+        if choice.isdigit() and 1 <= int(choice) <= len(MENU):
+            MENU[int(choice) - 1][1](state)
+        else:
+            print("Please choose a number from the menu.")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (EOFError, KeyboardInterrupt):
+        print("\nGoodbye!")
